@@ -3,8 +3,16 @@ const path = require('path');
 const fs = require('fs').promises;
 const { showInfoMessage, showErrorMessage } = require('../services/vscodeServices');
 const tiktoken = require('tiktoken');
+const { checkIsIgnored } = require('../core/ignoreHelper');
+const { findCommonBasePath } = require('../core/utils');
 
-const removeComments = async (uris) => {
+/**
+ * Removes comments from selected files/folders
+ * @param {vscode.Uri[]} uris Selected URIs
+ * @param {string[]} ignorePatterns Patterns of files/folders to ignore
+ * @returns {Promise<void>}
+ */
+const removeComments = async (uris, ignorePatterns = []) => {
     if (!Array.isArray(uris) || uris.length === 0) return;
 
     try {
@@ -12,16 +20,36 @@ const removeComments = async (uris) => {
         let totalCharactersRemoved = 0;
         let totalTokensRemoved = 0;
         const encoder = tiktoken.get_encoding("cl100k_base");
+        
+        // Determine the common base path for relative path calculations
+        const selectedPaths = uris.map(uri => uri.fsPath);
+        const basePath = findCommonBasePath(selectedPaths);
+        console.log('Base path for ignore checks:', basePath);
+        console.log('Using ignore patterns:', ignorePatterns);
 
         for (const uri of uris) {
             const stats = await vscode.workspace.fs.stat(uri);
+            const relativePath = path.relative(basePath, uri.fsPath);
+            const fileName = path.basename(uri.fsPath);
+            
+            // Check if this URI should be ignored
+            if (relativePath && checkIsIgnored(
+                relativePath,
+                fileName,
+                stats.type === vscode.FileType.Directory,
+                ignorePatterns
+            )) {
+                console.log(`Ignoring selected item: ${relativePath}`);
+                continue;
+            }
+            
             if (stats.type === vscode.FileType.Directory) {
-                const result = await processDirectory(uri.fsPath, encoder);
+                const result = await processDirectory(uri.fsPath, encoder, basePath, ignorePatterns);
                 filesProcessed += result.filesProcessed;
                 totalCharactersRemoved += result.charactersRemoved;
                 totalTokensRemoved += result.tokensRemoved;
             } else if (stats.type === vscode.FileType.File) {
-                const result = await processFile(uri.fsPath, encoder);
+                const result = await processFile(uri.fsPath, encoder, basePath, ignorePatterns);
                 if (result.processed) {
                     filesProcessed++;
                     totalCharactersRemoved += result.charactersRemoved;
@@ -45,36 +73,79 @@ const removeComments = async (uris) => {
     }
 };
 
-const processDirectory = async (dirPath, encoder) => {
-    const entries = await fs.readdir(dirPath, { withFileTypes: true });
-    let filesProcessed = 0;
-    let charactersRemoved = 0;
-    let tokensRemoved = 0;
+/**
+ * Processes a directory for comment removal with ignore pattern support
+ * @param {string} dirPath Path to the directory
+ * @param {Object} encoder Tiktoken encoder instance
+ * @param {string} basePath Base path for relative path calculations
+ * @param {string[]} ignorePatterns Patterns of files/folders to ignore
+ * @returns {Object} Processing results
+ */
+const processDirectory = async (dirPath, encoder, basePath, ignorePatterns = []) => {
+    try {
+        const entries = await fs.readdir(dirPath, { withFileTypes: true });
+        let filesProcessed = 0;
+        let charactersRemoved = 0;
+        let tokensRemoved = 0;
 
-    for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name);
-        if (entry.isDirectory()) {
-            const result = await processDirectory(fullPath, encoder);
-            filesProcessed += result.filesProcessed;
-            charactersRemoved += result.charactersRemoved;
-            tokensRemoved += result.tokensRemoved;
-        } else if (entry.isFile()) {
-            const result = await processFile(fullPath, encoder);
-            if (result.processed) {
-                filesProcessed++;
+        for (const entry of entries) {
+            const fullPath = path.join(dirPath, entry.name);
+            const relativePath = path.relative(basePath, fullPath);
+            
+            // Check if this entry should be ignored
+            if (checkIsIgnored(
+                relativePath,
+                entry.name,
+                entry.isDirectory(),
+                ignorePatterns
+            )) {
+                console.log(`Ignoring: ${relativePath}`);
+                continue;
+            }
+            
+            if (entry.isDirectory()) {
+                const result = await processDirectory(fullPath, encoder, basePath, ignorePatterns);
+                filesProcessed += result.filesProcessed;
                 charactersRemoved += result.charactersRemoved;
                 tokensRemoved += result.tokensRemoved;
+            } else if (entry.isFile()) {
+                const result = await processFile(fullPath, encoder, basePath, ignorePatterns);
+                if (result.processed) {
+                    filesProcessed++;
+                    charactersRemoved += result.charactersRemoved;
+                    tokensRemoved += result.tokensRemoved;
+                }
             }
         }
-    }
 
-    return { filesProcessed, charactersRemoved, tokensRemoved };
+        return { filesProcessed, charactersRemoved, tokensRemoved };
+    } catch (error) {
+        console.error(`Error processing directory ${dirPath}:`, error);
+        return { filesProcessed: 0, charactersRemoved: 0, tokensRemoved: 0 };
+    }
 };
 
-const processFile = async (filePath, encoder) => {
+/**
+ * Processes a file for comment removal with ignore pattern support
+ * @param {string} filePath Path to the file
+ * @param {Object} encoder Tiktoken encoder instance
+ * @param {string} basePath Base path for relative path calculations
+ * @param {string[]} ignorePatterns Patterns of files to ignore
+ * @returns {Object} Processing results
+ */
+const processFile = async (filePath, encoder, basePath, ignorePatterns = []) => {
     try {
         const ext = path.extname(filePath).toLowerCase();
-        console.log(`Processing file: ${filePath} with extension: ${ext}`);
+        const relativePath = path.relative(basePath, filePath);
+        const fileName = path.basename(filePath);
+        
+        console.log(`Processing file: ${relativePath} with extension: ${ext}`);
+        
+        // Check if this file should be ignored
+        if (checkIsIgnored(relativePath, fileName, false, ignorePatterns)) {
+            console.log(`Ignoring file: ${relativePath}`);
+            return { processed: false, charactersRemoved: 0, tokensRemoved: 0 };
+        }
         
         if (!isSupportedFileType(ext)) {
             console.log(`File type ${ext} not supported`);
@@ -90,7 +161,7 @@ const processFile = async (filePath, encoder) => {
         const newTokens = encoder.encode(cleanedContent).length;
         
         if (content !== cleanedContent) {
-            console.log(`Changes detected, saving file: ${filePath}`);
+            console.log(`Changes detected, saving file: ${relativePath}`);
             await fs.writeFile(filePath, cleanedContent, 'utf8');
             return {
                 processed: true,
@@ -99,7 +170,7 @@ const processFile = async (filePath, encoder) => {
             };
         }
         
-        console.log(`No changes needed for file: ${filePath}`);
+        console.log(`No changes needed for file: ${relativePath}`);
         return { processed: false, charactersRemoved: 0, tokensRemoved: 0 };
     } catch (error) {
         console.error(`Error processing file ${filePath}:`, error);

@@ -5,11 +5,16 @@ const tiktoken = require('tiktoken');
 
 const { extractCode } = require('./commands/codeExtractor');
 const { removeComments } = require('./commands/commentRemover');
+const { getEffectiveIgnorePatterns } = require('./core/ignoreHelper');
 
 let currentPanel = undefined;
 let clipboardListener = undefined;
 let encoder = null;
 
+/**
+ * Activates the extension
+ * @param {vscode.ExtensionContext} context The extension context
+ */
 function activate(context) {
     console.log('Syntax Extractor is now active!');
 
@@ -20,6 +25,10 @@ function activate(context) {
     setupClipboardListener();
 }
 
+/**
+ * Registers all commands for the extension
+ * @param {vscode.ExtensionContext} context The extension context
+ */
 function registerCommands(context) {
     const commands = [
         { id: 'codeExtractor.extractCode', handler: (uri, uris) => handleExtractCode(context, uri, uris) },
@@ -33,6 +42,12 @@ function registerCommands(context) {
     });
 }
 
+/**
+ * Handles the Extract Code Structure command
+ * @param {vscode.ExtensionContext} context The extension context
+ * @param {vscode.Uri} uri Single selected URI
+ * @param {vscode.Uri[]} uris Multiple selected URIs
+ */
 async function handleExtractCode(context, uri, uris) {
     if (!uris || uris.length === 0) {
         uris = uri ? [uri] : [];
@@ -43,8 +58,12 @@ async function handleExtractCode(context, uri, uris) {
         return;
     }
 
+    // Get ignore patterns from settings
+    const ignorePatterns = getEffectiveIgnorePatterns();
+    console.log('Using ignore patterns for extraction:', ignorePatterns);
+
     const initialPromptMessage = context.globalState.get('initialPromptMessage', '');
-    const extractedContent = await extractCode(uris);
+    const extractedContent = await extractCode(uris, ignorePatterns);
     const combinedContent = initialPromptMessage + '\n\n' + extractedContent;
 
     // Update the clipboard with the combined content
@@ -57,6 +76,11 @@ async function handleExtractCode(context, uri, uris) {
     vscode.window.showInformationMessage('Content extracted and copied to clipboard!');
 }
 
+/**
+ * Handles the Remove Comments command
+ * @param {vscode.Uri} uri Single selected URI
+ * @param {vscode.Uri[]} uris Multiple selected URIs
+ */
 async function handleRemoveComments(uri, uris) {
     console.log('handleRemoveComments called with:', { uri: uri?.fsPath, uris: uris?.map(u => u.fsPath) });
     
@@ -77,7 +101,12 @@ async function handleRemoveComments(uri, uris) {
 
     if (proceed === 'Yes') {
         console.log('Starting comment removal for:', uris.map(u => u.fsPath));
-        await removeComments(uris);
+        
+        // Get ignore patterns from settings
+        const ignorePatterns = getEffectiveIgnorePatterns();
+        console.log('Using ignore patterns for comment removal:', ignorePatterns);
+        
+        await removeComments(uris, ignorePatterns);
     } else {
         console.log('Comment removal cancelled by user');
     }
