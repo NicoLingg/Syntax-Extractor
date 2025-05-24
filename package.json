@@ -2,7 +2,7 @@
   "name": "syntax-extractor",
   "displayName": "Syntax Extractor",
   "description": "Syntax Extractor, helps you Gather your Code",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "JosefNobach",
   "icon": "resources/SyntaxExtractor256x256.png",
   "engines": {
@@ -69,6 +69,11 @@
     "configuration": {
       "title": "Syntax Extractor",
       "properties": {
+        "syntaxExtractor.enableIgnoreProcessing": {
+          "type": "boolean",
+          "default": true,
+          "description": "Globally enable or disable all file/folder ignore processing. If false, both default and custom ignore patterns will be disregarded."
+        },
         "syntaxExtractor.ignorePatterns": {
           "type": "string",
           "default": "*.log,*.tmp,dist/,build/",
@@ -86,7 +91,7 @@
     "lint": "eslint .",
     "pretest": "npm run lint",
     "test": "node ./test/runTest.js",
-    "postinstall": "npm install tiktoken"
+    "postinstall": "npm install tiktoken && npm install minimatch@9.0.3"
   },
   "devDependencies": {
     "@types/glob": "^7.1.3",
